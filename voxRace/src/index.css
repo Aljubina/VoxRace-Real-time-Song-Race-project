@@ -1,0 +1,92 @@
+:root {
+  --bg: #0f0f17;
+  --bg2: #111827;
+  --panel: rgba(255, 255, 255, 0.06);
+  --panel2: rgba(255, 255, 255, 0.08);
+  --border: rgba(255, 255, 255, 0.12);
+  --text: rgba(255, 255, 255, 0.92);
+  --muted: rgba(255, 255, 255, 0.68);
+  --muted2: rgba(255, 255, 255, 0.52);
+
+  --primary: #a78bfa;
+  --primary2: #9f7aea;
+  --accent: #60a5fa;
+
+  --success: #34d399;
+  --danger: #fb7185;
+
+  --shadow: 0 10px 35px rgba(0, 0, 0, 0.45);
+  --shadow2: 0 12px 60px rgba(0, 0, 0, 0.6);
+
+  --radius: 18px;
+  --radius-sm: 12px;
+  --ring: 0 0 0 4px rgba(167, 139, 250, 0.25);
+
+  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-display: Poppins, Inter, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, sans-serif;
+
+  color-scheme: dark;
+  font-family: var(--font);
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: radial-gradient(900px 520px at 20% 10%, rgba(167, 139, 250, 0.18), transparent 58%),
+    radial-gradient(850px 520px at 85% 15%, rgba(96, 165, 250, 0.16), transparent 55%),
+    radial-gradient(900px 560px at 55% 90%, rgba(167, 139, 250, 0.12), transparent 60%),
+    linear-gradient(180deg, var(--bg), #0b0b12 60%, #090911);
+  overflow-x: hidden;
+}
+
+/* Subtle noise overlay for depth */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2260%22 viewBox=%220 0 60 60%22%3E%3Cfilter id=%22n%22%3E%3CfeTurbulence type=%22fractalNoise%22 baseFrequency=%220.8%22 numOctaves=%222%22 stitchTiles=%22stitch%22/%3E%3C/filter%3E%3Crect width=%2260%22 height=%2260%22 filter=%22url(%23n)%22 opacity=%220.12%22/%3E%3C/svg%3E');
+  mix-blend-mode: overlay;
+  opacity: 0.25;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(167, 139, 250, 0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
