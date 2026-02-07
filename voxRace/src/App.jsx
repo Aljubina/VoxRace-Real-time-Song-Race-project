@@ -6,7 +6,6 @@ import './App.css' // imports css file and styles the App component
 import { ToastContainer, toast} from 'react-toastify';  // toast -> function to show notifications and ToastContainer -> container for notifications
 import 'react-toastify/dist/ReactToastify.css';  
 import io from 'socket.io-client'; // socket.io-client -> library for real-time communication between client and server
-
 // socket -> connects frontend to backend websocket server
 const socket = io('ws://localhost:5000'); 
 
@@ -73,6 +72,32 @@ function App() {
     return seed.sort((a, b) => b.score - a.score)
   }, [nickname, players]) // dependencies -> re-run the function when the nickname or players change
 
+  // Socket: create room — emit when host creates, then sync state from ack/roomUpdated
+  // Socket: join room — emit when player joins, then sync state from ack/playerJoined
+  useEffect(() => {
+    const onRoomUpdated = (data) => {
+      if (data.players) setPlayers(data.players)
+    }
+    const onPlayerJoined = (data) => {
+      setPlayers((prev) => [...prev, { id: data.id, name: data.name, isHost: false }])
+      toast(`${data.name} joined the room`, {
+        position: 'top-right',
+        autoClose: 5000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+        progress: undefined,
+        theme: 'light',
+      })
+    }
+    socket.on('roomUpdated', onRoomUpdated)
+    socket.on('playerJoined', onPlayerJoined)
+    return () => {
+      socket.off('roomUpdated', onRoomUpdated)
+      socket.off('playerJoined', onPlayerJoined)
+    }
+  }, [])
   // useEffect -> run code on a condition/ runs side effects (data fetching, subscriptions, timers, logging, etc.)
   useEffect(() => {
     // if the screen is not the game, return
@@ -120,29 +145,41 @@ function App() {
 
   // handleCreate -> function to handle the creation of a new room
   function handleCreate(payload) {
-    // set the nickname, room code, and is host to the payload
-    setNickname(payload.nickname) // set the nickname to the payload
-    setRoomCode(payload.roomCode) // set the room code to the payload
-    setIsHost(true) // set the is host to true
-    // set the players to the payload
-    setPlayers([{ id: makeId(), name: payload.nickname || 'Host', isHost: true }])
-    setScreen('lobby') // set the screen to the lobby screen
+    const code = (payload.roomCode || '').toUpperCase()
+    const name = payload.nickname?.trim() || 'Host'
+    setNickname(name)
+    setRoomCode(code)
+    setIsHost(true)
+    setPlayers([{ id: makeId(), name, isHost: true }])
+    setScreen('lobby')
+    socket.emit('createRoom', code, name, {
+      category: payload.category,
+      rounds: payload.rounds,
+      timePerSong: payload.timePerSong,
+    }, (ack) => {
+      if (ack?.ok && ack.roomCode) {
+        setRoomCode(ack.roomCode)
+      }
+    })
   }
 
   // handleJoin -> function to handle the joining of a room
   function handleJoin(payload) {
-    // set the nickname, room code, and is host to the payload
-    setNickname(payload.nickname)
-    setRoomCode(payload.roomCode)
-    setIsHost(false) // set the is host to false
-    // set the players to the payload
-    setPlayers((prev) => {
-      // if the previous players are not empty, use the previous players, otherwise use the host
-      const base = prev.length ? prev : [{ id: makeId(), name: 'Host', isHost: true }]
-      // return the previous players with the new player added
-      return [...base, { id: makeId(), name: payload.nickname || 'You', isHost: false }]
+    const code = (payload.roomCode || '').toUpperCase()
+    const name = payload.nickname?.trim() || 'You'
+    setNickname(name)
+    setRoomCode(code)
+    setIsHost(false)
+    setPlayers([{ id: makeId(), name: 'Host', isHost: true }])
+    setScreen('lobby')
+    socket.emit('joinRoom', code, name, (ack) => {
+      if (ack?.ok) {
+        setRoomCode(ack.roomCode ?? code)
+      } else {
+        toast.error('Could not join room. Check the code and try again.')
+        setScreen('join')
+      }
     })
-    setScreen('lobby') // set the screen to the lobby screen
   }
 
   // startGame -> function to start the game
@@ -172,6 +209,7 @@ function App() {
     // set the screen to the lobby screen if the current user is the host, otherwise set it to the home screen
     setScreen(isHost ? 'lobby' : 'home')
   }
+
 
   // pills -> array of objects to store the labels and ids of the pills
   const pills = [
