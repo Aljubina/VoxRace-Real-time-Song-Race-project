@@ -137,6 +137,7 @@
   content: '';
   position: absolute;
   inset: -40%;
+  pointer-events: none;
   background: radial-gradient(
       40% 40% at 30% 40%,
       rgba(167, 139, 250, 0.35),
@@ -158,6 +159,7 @@
   right: -10%;
   bottom: -42px;
   height: 140px;
+  pointer-events: none;
   background: repeating-linear-gradient(
     90deg,
     rgba(255, 255, 255, 0.14),
@@ -176,6 +178,7 @@
 
 .heroInner {
   position: relative;
+  z-index: 1;
   display: grid;
   gap: 14px;
   justify-items: center;
