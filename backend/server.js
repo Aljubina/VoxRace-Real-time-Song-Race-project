@@ -47,7 +47,7 @@ io.on('connection', (socket) => {
       players: [player],
       host: socket.id,
       state: 'lobby',
-      scores: {},              // playerId -> score
+      scores: {},              // playerId -> score (initialized empty)
       currentRound: 0,         // logical round (set of songs)
       currentSongIndex: 0,     // 1..SONGS_PER_ROUND within current round
       currentSong: null,       // current song metadata
@@ -81,6 +81,11 @@ io.on('connection', (socket) => {
 
     const player = { id: socket.id, name: nickname || 'Player', isHost: false };
     room.players.push(player);
+    // Ensure scores object exists and initialize this player's score to 0
+    if (!room.scores) room.scores = {};
+    if (room.scores[player.id] == null) {
+      room.scores[player.id] = 0;
+    }
     socket.join(code);
     socket.roomCode = code;
 
@@ -111,6 +116,9 @@ io.on('connection', (socket) => {
       clearInterval(room.countdownTimerId);
       room.countdownTimerId = null;
     }
+
+    // Send initial leaderboard with all players at 0
+    io.to(code).emit('leaderboard-update', getLeaderboard(room));
 
     startNewRound(code);
   });
@@ -148,6 +156,10 @@ io.on('connection', (socket) => {
       isCorrect,
       points
     });
+
+    // Always send updated leaderboard after each submitted answer
+    const leaderboard = getLeaderboard(room);
+    io.to(code).emit('leaderboard-update', leaderboard);
   });
 
   // ── DISCONNECT CLEANUP ────────────────────────────────

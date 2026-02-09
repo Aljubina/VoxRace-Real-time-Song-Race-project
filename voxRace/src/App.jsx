@@ -2,7 +2,7 @@
 // useEffect -> run code on a condition/ runs side effects (data fetching, subscriptions, timers, logging, etc.)
 // useMemo -> optimize calculations
 // useRef -> store a mutable value that does not cause re-renders when it changes
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import './App.css' // imports css file and styles the App component
 import { ToastContainer, toast} from 'react-toastify';  // toast -> function to show notifications and ToastContainer -> container for notifications
 import 'react-toastify/dist/ReactToastify.css';  
@@ -71,33 +71,10 @@ function App() {
   const totalRounds = 5
   // state to store the number of seconds left in the current round
   const [secondsLeft, setSecondsLeft] = useState(15)
-  // leaderboard from server (updated on round-result / leaderboard-update)
-  const [serverLeaderboard, setServerLeaderboard] = useState(null)
+  // real leaderboard from server (kept in sync via leaderboard-update / game-over)
+  const [realLeaderboard, setRealLeaderboard] = useState([])
   // when non-host receives new-round we switch to game and pass this so Game can sync audio/timer
   const [lastNewRound, setLastNewRound] = useState(null)
-
-  // state to store the leaderboard (derived state; fallback when no server data yet)
-  const leaderboard = useMemo(() => {
-    // Keep this derived (UI-only) so we don't create extra state or change any game logic.
-    // seed -> initial data for the leaderboard
-    // players[0]?.name ?? 'Player 1' -> if the first player is not found, use 'Player 1'
-    // players[1]?.name ?? 'Player 2' -> if the second player is not found, use 'Player 2'
-    // nickname ? nickname : 'You' -> if the nickname is not set, use 'You' (?? is the nullish coalescing operator)
-    const seed = [
-      { id: 'p1', name: players[0]?.name ?? 'Player 1', score: 120 },
-      { id: 'p2', name: players[1]?.name ?? 'Player 2', score: 95 },
-      { id: 'p3', name: nickname ? nickname : 'You', score: 80 },
-    ]
-    // sort the leaderboard by score in descending order
-    // a.score - b.score -> if a.score is greater than b.score, return 1, otherwise return -1
-    // b.score - a.score -> if b.score is greater than a.score, return 1, otherwise return -1
-    return seed.sort((a, b) => b.score - a.score)
-  }, [nickname, players]) // dependencies -> re-run the function when the nickname or players change
-
-  // Use server leaderboard when in game and we have received at least one update
-  const displayLeaderboard = screen === 'game' && serverLeaderboard && serverLeaderboard.length > 0
-    ? serverLeaderboard
-    : leaderboard
 
   // Socket: create room — emit when host creates, then sync state from ack/roomUpdated
   // Socket: join room — emit when player joins, then sync state from ack/playerJoined
@@ -121,7 +98,7 @@ function App() {
     socket.on('roomUpdated', onRoomUpdated)
     socket.on('playerJoined', onPlayerJoined)
     const onLeaderboardUpdate = (list) => {
-      if (Array.isArray(list)) setServerLeaderboard(list)
+      if (Array.isArray(list)) setRealLeaderboard(list)
     }
     const onNewRound = (payload) => {
       setScreen('game')
@@ -147,7 +124,7 @@ function App() {
   useEffect(() => {
     const onGameOver = ({ leaderboard: finalLeaderboard }) => {
       if (Array.isArray(finalLeaderboard)) {
-        setServerLeaderboard(finalLeaderboard)
+        setRealLeaderboard(finalLeaderboard)
       }
       setScreen('gameover')
     }
@@ -220,7 +197,7 @@ function App() {
   function startGame() {
     socket.emit('start-game', roomCode);
     // round/secondsLeft will be driven by server 'new-round' events
-    setServerLeaderboard(null)
+    setRealLeaderboard([])
   }
 
   // backToLobby -> function to go back to the lobby screen
@@ -317,7 +294,7 @@ function App() {
             round={round}
             totalRounds={totalRounds}
             secondsLeft={secondsLeft}
-            leaderboard={displayLeaderboard}
+            leaderboard={realLeaderboard}
             onBackToLobby={backToLobby}
             onSubmitAnswer={submitAnswer}
             roomCode={roomCode}
@@ -328,8 +305,8 @@ function App() {
 
         {screen === 'gameover' && (
           <GameOver
-            winnerName={leaderboard[0]?.name ?? 'Winner'}
-            leaderboard={leaderboard}
+            winnerName={realLeaderboard[0]?.name ?? 'Winner'}
+            leaderboard={realLeaderboard}
             onPlayAgain={playAgain}
             onHome={goHome}
           />

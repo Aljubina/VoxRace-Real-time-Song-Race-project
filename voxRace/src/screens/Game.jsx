@@ -87,12 +87,6 @@ export default function Game({
       setFlashKey(k => k + 1);
     });
 
-    // Leaderboard updates from server (replaces your mock)
-    socket.on('leaderboard-update', (updatedLeaderboard) => {
-      // You can store this in state if you want, or just use the prop
-      // For now, assuming App.jsx passes updated one
-    });
-
     // When a song ends (time up or correct answer)
     socket.on('round-end', ({ correctAnswer, reason }) => {
       setLastCorrectAnswer(correctAnswer || 'Unknown');
@@ -121,7 +115,6 @@ export default function Game({
     return () => {
       socket.off('new-round');
       socket.off('round-result');
-      socket.off('leaderboard-update');
       socket.off('round-end');
       socket.off('countdown');
       if (audioRef.current) {
@@ -263,13 +256,18 @@ export default function Game({
         </header>
         <div className="panelBody">
           <div className="leaderboard">
-            {leaderboard.map((p, idx) => (
+            {(!leaderboard || leaderboard.length === 0) && (
+              <div className="lbEmpty">Waiting for answers...</div>
+            )}
+            {leaderboard && leaderboard.map((p, idx) => (
               <div className="lbRow" key={p.id}>
                 <div className="lbLeft">
                   <div className="place">{idx + 1}</div>
                   <div className="lbName">{p.name}</div>
                 </div>
-                <div className="score">{p.score} pts</div>
+                <div className="score">
+                  {typeof p.score === 'number' ? p.score : 0} pts
+                </div>
               </div>
             ))}
           </div>
