@@ -1,13 +1,16 @@
 // useState -> store data that can change (state),
 // useEffect -> run code on a condition/ runs side effects (data fetching, subscriptions, timers, logging, etc.)
 // useMemo -> optimize calculations
+// useRef -> store a mutable value that does not cause re-renders when it changes
 import { useEffect, useMemo, useState } from 'react';
 import './App.css' // imports css file and styles the App component
 import { ToastContainer, toast} from 'react-toastify';  // toast -> function to show notifications and ToastContainer -> container for notifications
 import 'react-toastify/dist/ReactToastify.css';  
 import io from 'socket.io-client'; // socket.io-client -> library for real-time communication between client and server
 // socket -> connects frontend to backend websocket server
-const socket = io('ws://localhost:5000'); 
+const socket = io('http://localhost:4000', {
+  autoConnect: false,
+});
 
 // import screens -> components for each screen of the app
 import Home from './screens/Home.jsx'
@@ -33,7 +36,22 @@ function makeRoomCode() {
 
 // App -> main component that renders the app
 function App() {
-  const [screen, setScreen] = useState('home') // state to store the current screen
+  const [screen, setScreen] = useState('home'); // state to store the current screen
+
+  // Socket connect on mount, disconnect on unmount (must be inside component)
+  useEffect(() => {
+    socket.connect();
+    socket.on('connect', () => {
+      console.log('Socket connected:', socket.id);
+    });
+    socket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err);
+      toast.error('Cannot connect to server');
+    });
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
 
   // UI-only mock data so you can preview screens without backend/sockets.
   const [roomCode, setRoomCode] = useState(makeRoomCode()) // state to store the room code
@@ -53,8 +71,12 @@ function App() {
   const totalRounds = 5
   // state to store the number of seconds left in the current round
   const [secondsLeft, setSecondsLeft] = useState(15)
+  // leaderboard from server (updated on round-result / leaderboard-update)
+  const [serverLeaderboard, setServerLeaderboard] = useState(null)
+  // when non-host receives new-round we switch to game and pass this so Game can sync audio/timer
+  const [lastNewRound, setLastNewRound] = useState(null)
 
-  // state to store the leaderboard (derived state)
+  // state to store the leaderboard (derived state; fallback when no server data yet)
   const leaderboard = useMemo(() => {
     // Keep this derived (UI-only) so we don't create extra state or change any game logic.
     // seed -> initial data for the leaderboard
@@ -71,6 +93,11 @@ function App() {
     // b.score - a.score -> if b.score is greater than a.score, return 1, otherwise return -1
     return seed.sort((a, b) => b.score - a.score)
   }, [nickname, players]) // dependencies -> re-run the function when the nickname or players change
+
+  // Use server leaderboard when in game and we have received at least one update
+  const displayLeaderboard = screen === 'game' && serverLeaderboard && serverLeaderboard.length > 0
+    ? serverLeaderboard
+    : leaderboard
 
   // Socket: create room — emit when host creates, then sync state from ack/roomUpdated
   // Socket: join room — emit when player joins, then sync state from ack/playerJoined
@@ -93,35 +120,42 @@ function App() {
     }
     socket.on('roomUpdated', onRoomUpdated)
     socket.on('playerJoined', onPlayerJoined)
+    const onLeaderboardUpdate = (list) => {
+      if (Array.isArray(list)) setServerLeaderboard(list)
+    }
+    const onNewRound = (payload) => {
+      setScreen('game')
+      // Use round + timer from server payload when available
+      if (payload?.round != null) setRound(payload.round)
+      if (typeof payload?.timer === 'number') {
+        setSecondsLeft(payload.timer)
+      } else {
+        setSecondsLeft(15)
+      }
+      if (payload) setLastNewRound(payload)
+    }
+    socket.on('leaderboard-update', onLeaderboardUpdate)
+    socket.on('new-round', onNewRound)
     return () => {
       socket.off('roomUpdated', onRoomUpdated)
       socket.off('playerJoined', onPlayerJoined)
+      socket.off('leaderboard-update', onLeaderboardUpdate)
+      socket.off('new-round', onNewRound)
     }
   }, [])
-  // useEffect -> run code on a condition/ runs side effects (data fetching, subscriptions, timers, logging, etc.)
+  // Server-driven game over: after 5 songs, backend emits 'game-over'
   useEffect(() => {
-    // if the screen is not the game, return
-    if (screen !== 'game') return
-
-    // setInterval -> set a timer that runs every 1 second
-    // s -> current number of seconds left
-    // Math.max(0, s - 1) -> if the current number of seconds left is greater than 0, subtract 1, otherwise set it to 0
-    const t = window.setInterval(() => {
-      // set the number of seconds left to the maximum of 0 and the current number of seconds left minus 1
-      setSecondsLeft((s) => Math.max(0, s - 1))
-    }, 1000)
-    // clearInterval -> clear the timer when the component unmounts
-    return () => window.clearInterval(t) // return a function to clear the timer
-  }, [screen]) // dependencies -> re-run the function when the screen changes
-
-  useEffect(() => {
-    // if the screen is not the game, return
-    if (screen !== 'game') return
-    if (secondsLeft > 0) return
-    // End the current round quickly in the UI preview.
-    const t = window.setTimeout(() => setScreen('gameover'), 450)
-    return () => window.clearTimeout(t) // return a function to clear the timer
-  }, [screen, secondsLeft]) // dependencies -> re-run the function when the screen or seconds left changes
+    const onGameOver = ({ leaderboard: finalLeaderboard }) => {
+      if (Array.isArray(finalLeaderboard)) {
+        setServerLeaderboard(finalLeaderboard)
+      }
+      setScreen('gameover')
+    }
+    socket.on('game-over', onGameOver)
+    return () => {
+      socket.off('game-over', onGameOver)
+    }
+  }, [])
 
   // goHome -> function to go to the home screen
   function goHome() {
@@ -184,11 +218,9 @@ function App() {
 
   // startGame -> function to start the game
   function startGame() {
-    // set the round to 1 and the seconds left to 15
-    setRound(1)
-    setSecondsLeft(15)
-    // set the screen to the game screen
-    setScreen('game')
+    socket.emit('start-game', roomCode);
+    // round/secondsLeft will be driven by server 'new-round' events
+    setServerLeaderboard(null)
   }
 
   // backToLobby -> function to go back to the lobby screen
@@ -198,8 +230,12 @@ function App() {
   }
 
   // submitAnswer -> function to submit the answer
-  function submitAnswer() {
-    // UI-only: no-op. Wire this to your actual socket/game state later.
+  function submitAnswer(answer) {
+    if(!answer?.trim()) return;
+    socket.emit('submit-answer', {
+      roomCode,
+      answer: answer.trim()
+    });
   }
 
   function playAgain() {
@@ -209,7 +245,6 @@ function App() {
     // set the screen to the lobby screen if the current user is the host, otherwise set it to the home screen
     setScreen(isHost ? 'lobby' : 'home')
   }
-
 
   // pills -> array of objects to store the labels and ids of the pills
   const pills = [
@@ -282,9 +317,12 @@ function App() {
             round={round}
             totalRounds={totalRounds}
             secondsLeft={secondsLeft}
-            leaderboard={leaderboard}
+            leaderboard={displayLeaderboard}
             onBackToLobby={backToLobby}
             onSubmitAnswer={submitAnswer}
+            roomCode={roomCode}
+            socket={socket}
+            initialRoundPayload={lastNewRound}
           />
         )}
 

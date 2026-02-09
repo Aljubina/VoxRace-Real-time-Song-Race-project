@@ -1,36 +1,167 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react';
+import { toast } from 'react-toastify'; // already imported in App.jsx, so reuse it
 
+// Assume socket is passed as prop from App.jsx (or import it globally if you prefer)
 export default function Game({
   round,
   totalRounds,
-  secondsLeft,
+  secondsLeft: initialSecondsLeft,
   leaderboard,
   onBackToLobby,
   onSubmitAnswer,
+  roomCode,
+  socket,
+  initialRoundPayload, // when switching to game from lobby on new-round (non-host)
 }) {
-  const [answer, setAnswer] = useState('')
-  const [feedback, setFeedback] = useState(null) // 'good' | 'bad'
-  const [flashKey, setFlashKey] = useState(0)
+  const [answer, setAnswer] = useState('');
+  const [feedback, setFeedback] = useState(null);
+  const [flashKey, setFlashKey] = useState(0);
+  const [currentSeconds, setCurrentSeconds] = useState(initialSecondsLeft);
+  const [songNumber, setSongNumber] = useState(1);
+  const [songsPerRound, setSongsPerRound] = useState(5);
+  const [betweenSongs, setBetweenSongs] = useState(false);
+  const [betweenCountdown, setBetweenCountdown] = useState(null);
+  const [lastCorrectAnswer, setLastCorrectAnswer] = useState(null);
+  const audioRef = useRef(null);
 
+  // Progress bar calculation (keep as-is, but use currentSeconds)
   const progress = useMemo(() => {
-    const total = Math.max(1, 30)
-    const clamped = Math.min(total, Math.max(0, total - secondsLeft))
-    return Math.round((clamped / total) * 100)
-  }, [secondsLeft])
+    const total = 15; // or pass timePerSong as prop later
+    const clamped = Math.min(total, Math.max(0, total - currentSeconds));
+    return Math.round((clamped / total) * 100);
+  }, [currentSeconds]);
 
+  // Sync audio + timer from new-round (same logic for socket or initial payload)
+  const applyNewRound = ({ audioUrl, startTime, timer: initialTimer, songNumber: sNum, songsPerRound: sCount }) => {
+    // Reset per-song visual state
+    setBetweenSongs(false);
+    setBetweenCountdown(null);
+    setLastCorrectAnswer(null);
+    setCurrentSeconds(initialTimer ?? 15);
+    if (typeof sNum === 'number') setSongNumber(sNum);
+    if (typeof sCount === 'number') setSongsPerRound(sCount);
+    setAnswer('');
+    setFeedback(null);
+
+    // Stop any previous audio before starting a new one
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+
+    const audio = new Audio(audioUrl);
+    audioRef.current = audio;
+    const now = Date.now();
+    const delay = (startTime != null ? startTime - now : 0);
+    setTimeout(() => {
+      audio.play().catch(err => {
+        console.error('Audio play failed:', err);
+        toast.error('Failed to play audio. Check your connection.');
+      });
+    }, delay > 0 ? delay : 0);
+  };
+
+  // When we mount with initialRoundPayload (e.g. non-host just switched to game on new-round)
   useEffect(() => {
-    if (!feedback) return
-    const t = window.setTimeout(() => setFeedback(null), 900)
-    return () => window.clearTimeout(t)
-  }, [feedback, flashKey])
+    if (!initialRoundPayload) return;
+    applyNewRound(initialRoundPayload);
+  }, [initialRoundPayload]);
+
+  // Real-time socket listeners
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on('new-round', (payload) => {
+      applyNewRound(payload);
+    });
+
+    // When someone submits an answer (including you)
+    socket.on('round-result', ({ playerId, isCorrect, points, playerName }) => {
+      if (isCorrect) {
+        setFeedback('correct');
+        toast.success(`${playerName || 'Someone'} got it! +${points} points`);
+      } else if (playerId === socket.id) {
+        setFeedback('wrong');
+        toast.error('Wrong answer — keep trying!');
+      }
+      setFlashKey(k => k + 1);
+    });
+
+    // Leaderboard updates from server (replaces your mock)
+    socket.on('leaderboard-update', (updatedLeaderboard) => {
+      // You can store this in state if you want, or just use the prop
+      // For now, assuming App.jsx passes updated one
+    });
+
+    // When a song ends (time up or correct answer)
+    socket.on('round-end', ({ correctAnswer, reason }) => {
+      setLastCorrectAnswer(correctAnswer || 'Unknown');
+      setBetweenSongs(true);
+      setCurrentSeconds(0);
+
+      if (reason === 'correct') {
+        toast.info(`Correct answer: ${correctAnswer}`);
+      } else {
+        toast.info(`Time's up! Correct answer: ${correctAnswer}`);
+      }
+
+      // Pause audio at end of song
+      if (audioRef.current) audioRef.current.pause();
+    });
+
+    // 3-second countdown between songs
+    socket.on('countdown', ({ secondsLeft, phase }) => {
+      if (phase === 'between-songs') {
+        setBetweenSongs(true);
+        setBetweenCountdown(secondsLeft);
+      }
+    });
+
+    // Cleanup
+    return () => {
+      socket.off('new-round');
+      socket.off('round-result');
+      socket.off('leaderboard-update');
+      socket.off('round-end');
+      socket.off('countdown');
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, [socket]);
+
+  // Client-side timer countdown (as fallback / visual sync)
+  useEffect(() => {
+    if (currentSeconds <= 0) return;
+
+    const interval = setInterval(() => {
+      setCurrentSeconds(prev => Math.max(0, prev - 1));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [currentSeconds]);
 
   function submit(e) {
-    e.preventDefault()
-    const ok = answer.trim().length > 0
-    setFeedback(ok ? 'good' : 'bad')
-    setFlashKey((k) => k + 1)
-    onSubmitAnswer?.(answer)
-    if (ok) setAnswer('')
+    e.preventDefault();
+    const trimmed = answer.trim();
+
+    if (!trimmed) {
+      setFeedback('bad');
+      setFlashKey(k => k + 1);
+      return;
+    }
+
+    // Send real answer to server
+    socket.emit('submit-answer', {
+      roomCode,
+      answer: trimmed,
+    });
+
+    // Local optimistic feedback (will be overridden by server response)
+    setFeedback('good');
+    setAnswer('');
+    onSubmitAnswer?.(trimmed);
   }
 
   return (
@@ -40,6 +171,8 @@ export default function Game({
           <div className="gameTop">
             <div className="roundTag">
               Round <strong style={{ color: 'rgba(255,255,255,0.92)' }}>{round}</strong> / {totalRounds}
+              {' '}•{' '}
+              Song <strong style={{ color: 'rgba(255,255,255,0.92)' }}>{songNumber}</strong> / {songsPerRound}
             </div>
             <button className="btn btnSmall btnGhost" onClick={onBackToLobby} type="button">
               Back to Lobby
@@ -47,8 +180,26 @@ export default function Game({
           </div>
 
           <div className="timer" aria-label="Countdown timer">
-            <div className="timerNum">{secondsLeft}</div>
+            <div className="timerNum">
+              {betweenSongs && betweenCountdown != null ? betweenCountdown : currentSeconds}
+            </div>
           </div>
+
+          {betweenSongs && (
+            <div className="betweenSongs" aria-live="polite">
+              {lastCorrectAnswer && (
+                <div className="betweenAnswer">
+                  Correct answer:{' '}
+                  <strong style={{ color: 'rgba(255,255,255,0.92)' }}>
+                    {lastCorrectAnswer}
+                  </strong>
+                </div>
+              )}
+              <div className="betweenNext">
+                Next song in {betweenCountdown != null ? betweenCountdown : 0}…
+              </div>
+            </div>
+          )}
 
           <div className="audioBox" aria-label="Audio player">
             <div className="audioMeta">
@@ -56,7 +207,7 @@ export default function Game({
                 <div className="audioTitle">Now playing</div>
                 <div className="audioHint">Guess the song title (and artist if you can)</div>
               </div>
-              <div className="hint">Preview UI only</div>
+              <div className="hint">Audio playing...</div>
             </div>
             <div className="progressTrack" aria-label="Audio progress">
               <div className="progressFill" style={{ '--p': `${progress}%` }} />
@@ -78,8 +229,9 @@ export default function Game({
                   onChange={(e) => setAnswer(e.target.value)}
                   placeholder="Type the song name…"
                   aria-label="Answer"
+                  disabled={currentSeconds <= 0 || betweenSongs}
                 />
-                <button className="btn btnPrimary" type="submit">
+                <button className="btn btnPrimary" type="submit" disabled={currentSeconds <= 0 || betweenSongs}>
                   Submit
                 </button>
               </div>
@@ -89,13 +241,16 @@ export default function Game({
               className={[
                 'feedback',
                 feedback ? 'feedbackShow' : '',
-                feedback === 'good' ? 'feedbackGood' : '',
-                feedback === 'bad' ? 'feedbackBad' : '',
+                feedback === 'good' || feedback === 'correct' ? 'feedbackGood' : '',
+                feedback === 'bad' || feedback === 'wrong' ? 'feedbackBad' : '',
               ].join(' ')}
               role="status"
               aria-live="polite"
             >
-              {feedback === 'good' ? 'Nice! Answer submitted.' : feedback === 'bad' ? 'Type an answer first.' : ' '}
+              {feedback === 'correct' ? 'Correct! 🎉' :
+               feedback === 'wrong' ? 'Wrong — try again' :
+               feedback === 'good' ? 'Answer submitted' :
+               feedback === 'bad' ? 'Please type something' : ' '}
             </div>
           </form>
         </div>
@@ -121,6 +276,5 @@ export default function Game({
         </div>
       </div>
     </section>
-  )
+  );
 }
-
