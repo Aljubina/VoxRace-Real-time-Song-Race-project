@@ -23,6 +23,7 @@ export default function Game({
   const [betweenCountdown, setBetweenCountdown] = useState(null);
   const [lastCorrectAnswer, setLastCorrectAnswer] = useState(null);
   const audioRef = useRef(null);
+  const audioPlayTimeoutRef = useRef(null);
 
   // Progress bar calculation (keep as-is, but use currentSeconds)
   const progress = useMemo(() => {
@@ -32,6 +33,32 @@ export default function Game({
   }, [currentSeconds]);
 
   // Sync audio + timer from new-round (same logic for socket or initial payload)
+  const stopAndCleanupAudio = (why) => {
+    // Cancel any scheduled (delayed) play from a previous round
+    if (audioPlayTimeoutRef.current) {
+      clearTimeout(audioPlayTimeoutRef.current);
+      audioPlayTimeoutRef.current = null;
+    }
+
+    const prev = audioRef.current;
+    if (!prev) return;
+
+    try {
+      prev.pause();
+      prev.currentTime = 0;
+      prev.src = '';
+      // Ensure browser releases / resets the media element
+      if (typeof prev.load === 'function') prev.load();
+    } catch (e) {
+      // Best-effort cleanup; don't crash the game UI
+      console.warn('Audio cleanup failed:', e);
+    } finally {
+      audioRef.current = null;
+      // Optional debugging
+      console.log(`[audio] stopped (${why})`);
+    }
+  };
+
   const applyNewRound = ({ audioUrl, startTime, timer: initialTimer, songNumber: sNum, songsPerRound: sCount }) => {
     // Reset per-song visual state
     setBetweenSongs(false);
@@ -43,21 +70,26 @@ export default function Game({
     setAnswer('');
     setFeedback(null);
 
-    // Stop any previous audio before starting a new one
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    // Stop/dispose any previous audio before starting a new one
+    stopAndCleanupAudio('new-round');
 
     const audio = new Audio(audioUrl);
     audioRef.current = audio;
     const now = Date.now();
     const delay = (startTime != null ? startTime - now : 0);
-    setTimeout(() => {
-      audio.play().catch(err => {
-        console.error('Audio play failed:', err);
-        toast.error('Failed to play audio. Check your connection.');
-      });
+
+    audioPlayTimeoutRef.current = setTimeout(() => {
+      // If something stopped/changed since scheduling, don't start stale audio.
+      if (audioRef.current !== audio) return;
+
+      console.log('[audio] starting');
+      const p = audio.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(err => {
+          console.error('Audio play failed:', err);
+          toast.error('Failed to play audio. Check your connection.');
+        });
+      }
     }, delay > 0 ? delay : 0);
   };
 
@@ -99,8 +131,8 @@ export default function Game({
         toast.info(`Time's up! Correct answer: ${correctAnswer}`);
       }
 
-      // Pause audio at end of song
-      if (audioRef.current) audioRef.current.pause();
+      // Stop/dispose audio at end of song (prevents overlap into next round)
+      stopAndCleanupAudio('round-end');
     });
 
     // 3-second countdown between songs
@@ -111,16 +143,19 @@ export default function Game({
       }
     });
 
+    // If your backend emits it, ensure audio is fully stopped on game end.
+    socket.on('game-over', () => {
+      stopAndCleanupAudio('game-over');
+    });
+
     // Cleanup
     return () => {
       socket.off('new-round');
       socket.off('round-result');
       socket.off('round-end');
       socket.off('countdown');
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
+      socket.off('game-over');
+      stopAndCleanupAudio('unmount');
     };
   }, [socket]);
 
