@@ -7,30 +7,38 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // your Vite frontend
+    origin: "http://localhost:5173",
     methods: ["GET", "POST"]
   }
 });
 
 app.use(cors());
-
-// Serve audio files
 app.use('/audio', express.static('public/audio'));
 
-// Single source of truth for songs
-// Audio lives in backend/public/audio and is served at http://localhost:4000/audio/...
-const SONGS_PER_ROUND = 5; // One logical "round" = 5 songs
+const SONGS_PER_ROUND = 5;
+
+// All available songs (add more as needed)
 const songs = [
-  { id: 1, title: 'Song One', artist: 'Artist A', audioUrl: 'http://localhost:4000/audio/doremon.mp3', correctAnswer: 'doremon' },
-  { id: 2, title: 'Song Two', artist: 'Artist B', audioUrl: 'http://localhost:4000/audio/oggy_ending.mp3', correctAnswer: 'oggy and cockroaches' },
-  { id: 3, title: 'Song Three', artist: 'Artist C', audioUrl: 'http://localhost:4000/audio/pokemon_theme_song.mp3', correctAnswer: 'pokemon' },
-  { id: 4, title: 'Song Four', artist: 'Artist D', audioUrl: 'http://localhost:4000/audio/power_rangers_theme.mp3', correctAnswer: 'power rangers' },
-  { id: 5, title: 'Song Five', artist: 'Artist E', audioUrl: 'http://localhost:4000/audio/shinchan_theme_song.mp3', correctAnswer: 'shinchan' }
-  // Add 10–20 real songs here (same pattern)
+  { id: 2, title: 'Oggy Ending', artist: 'Oggy', audioUrl: 'http://localhost:4000/audio/oggy_ending.mp3', correctAnswer: 'oggy and cockroaches' },
+  { id: 3, title: 'Pokemon Theme', artist: 'Pokemon', audioUrl: 'http://localhost:4000/audio/pokemon_theme_song.mp3', correctAnswer: 'pokemon' },
+  { id: 4, title: 'Power Rangers Theme', artist: 'Power Rangers', audioUrl: 'http://localhost:4000/audio/power_rangers_theme.mp3', correctAnswer: 'power rangers' },
+  { id: 5, title: 'Shinchan Theme', artist: 'Shinchan', audioUrl: 'http://localhost:4000/audio/shinchan_theme_song.mp3', correctAnswer: 'shinchan' },
+  { id: 6, title: 'Doremon', artist: 'Doremon', audioUrl: 'http://localhost:4000/audio/doremon.mp3', correctAnswer: 'doremon' },
+  // Add more songs here — aim for 10–20 total
 ];
 
-// In-memory rooms: roomCode → room data
-const rooms = new Map();
+// In-memory storage
+const rooms = new Map(); // roomCode → room data
+
+// Shuffle helper
+function shuffleArray(array) {
+  const shuffled = [...array];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -47,17 +55,17 @@ io.on('connection', (socket) => {
       players: [player],
       host: socket.id,
       state: 'lobby',
-      scores: {},              // playerId -> score (initialized empty)
-      currentRound: 0,         // logical round (set of songs)
-      currentSongIndex: 0,     // 1..SONGS_PER_ROUND within current round
-      currentSong: null,       // current song metadata
-      timerId: null,           // per-song timer
-      countdownTimerId: null,  // between-song countdown
-      isSongActive: false,     // guard to avoid double-ending a song
-      answers: {},             // playerId -> has answered this song
+      scores: {}, // playerId → score
+      currentRound: 0,
+      songIndex: 0,
+      roundSongs: [], // will be filled when round starts
+      currentSong: null,
+      timerId: null,
+      countdownTimerId: null,
+      answers: {},
       settings: {
         category: options?.category || 'Mixed',
-        totalRounds: options?.rounds || 5,
+        totalRounds: options?.rounds || 1,
         timePerSong: options?.timePerSong || 15
       }
     });
@@ -81,46 +89,39 @@ io.on('connection', (socket) => {
 
     const player = { id: socket.id, name: nickname || 'Player', isHost: false };
     room.players.push(player);
-    // Ensure scores object exists and initialize this player's score to 0
-    if (!room.scores) room.scores = {};
-    if (room.scores[player.id] == null) {
-      room.scores[player.id] = 0;
-    }
+    room.scores[socket.id] = 0; // Ensure score starts at 0
+
     socket.join(code);
     socket.roomCode = code;
 
     ack?.({ ok: true, roomCode: code });
     io.to(code).emit('playerJoined', player);
     io.to(code).emit('roomUpdated', { roomCode: code, players: room.players });
+
+    // Send current leaderboard to new joiner
+    io.to(code).emit('leaderboard-update', getLeaderboard(room));
   });
 
-  // ── START GAME (host only) ────────────────────────────
+  // ── START GAME (host only) ───────────────────────────
   socket.on('start-game', (roomCode) => {
     const code = String(roomCode || '').toUpperCase();
     const room = rooms.get(code);
     if (!room || room.host !== socket.id || room.state === 'playing') return;
 
-    // Reset per-game state
     room.state = 'playing';
     room.currentRound = 1;
-    room.currentSongIndex = 0;
-    room.scores = {};
-    room.answers = {};
-    room.currentSong = null;
-    room.isSongActive = false;
-    if (room.timerId) {
-      clearTimeout(room.timerId);
-      room.timerId = null;
-    }
-    if (room.countdownTimerId) {
-      clearInterval(room.countdownTimerId);
-      room.countdownTimerId = null;
+    room.songIndex = 0;
+
+    // Prepare shuffled list of 5 unique songs for this round
+    const available = [...songs];
+    room.roundSongs = shuffleArray(available).slice(0, Math.min(SONGS_PER_ROUND, available.length));
+
+    if (room.roundSongs.length === 0) {
+      console.warn('No songs available');
+      return endGame(code);
     }
 
-    // Send initial leaderboard with all players at 0
-    io.to(code).emit('leaderboard-update', getLeaderboard(room));
-
-    startNewRound(code);
+    startNewSong(code);
   });
 
   // ── SUBMIT ANSWER ─────────────────────────────────────
@@ -142,7 +143,7 @@ io.on('connection', (socket) => {
       points = Math.max(100, Math.floor(1000 - elapsed * 50));
       room.scores[socket.id] = (room.scores[socket.id] || 0) + points;
 
-      // End this song early if someone is correct
+      // End song early
       if (room.timerId) {
         clearTimeout(room.timerId);
         room.timerId = null;
@@ -157,38 +158,36 @@ io.on('connection', (socket) => {
       points
     });
 
-    // Always send updated leaderboard after each submitted answer
-    const leaderboard = getLeaderboard(room);
-    io.to(code).emit('leaderboard-update', leaderboard);
+    io.to(code).emit('leaderboard-update', getLeaderboard(room));
   });
 
   // ── DISCONNECT CLEANUP ────────────────────────────────
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-
     if (!socket.roomCode) return;
 
     const room = rooms.get(socket.roomCode);
     if (!room) return;
 
     room.players = room.players.filter(p => p.id !== socket.id);
+    delete room.scores[socket.id]; // optional: clean score
 
     if (room.players.length === 0) {
       rooms.delete(socket.roomCode);
       return;
     }
 
-    // If host left, transfer host
     if (room.host === socket.id && room.players.length > 0) {
       room.host = room.players[0].id;
       room.players[0].isHost = true;
     }
 
     io.to(socket.roomCode).emit('roomUpdated', { players: room.players });
+    io.to(socket.roomCode).emit('leaderboard-update', getLeaderboard(room));
   });
 });
 
-// ── ROUND & SONG LOGIC ──────────────────────────────────
+// ── HELPER: Get formatted leaderboard ────────────────────────
 function getLeaderboard(room) {
   return room.players.map(p => ({
     id: p.id,
@@ -197,111 +196,69 @@ function getLeaderboard(room) {
   })).sort((a, b) => b.score - a.score);
 }
 
-// Start a full logical round (set of SONGS_PER_ROUND songs)
-function startNewRound(code) {
+// ── Start next song in the round ─────────────────────────────
+function startNewSong(code) {
   const room = rooms.get(code);
   if (!room) return;
 
-  // Check if game is over
-  if (room.currentRound > room.settings.totalRounds) {
+  // If all 5 songs played → end round/game
+  if (room.songIndex >= room.roundSongs.length) {
     return endGame(code);
   }
 
-  // New round: reset per-round song index and answers
-  room.currentSongIndex = 1;
-  room.answers = {};
-  room.isSongActive = false;
-
-  startSong(code);
-}
-
-// Start a single song within the current round
-function startSong(code) {
-  const room = rooms.get(code);
-  if (!room) return;
-
-  // Safety: ensure we don't overlap songs
-  room.isSongActive = true;
-  if (room.timerId) {
-    clearTimeout(room.timerId);
-    room.timerId = null;
-  }
-  if (room.countdownTimerId) {
-    clearInterval(room.countdownTimerId);
-    room.countdownTimerId = null;
-  }
-
-  // Pick random song
-  const song = songs[Math.floor(Math.random() * songs.length)];
+  const song = room.roundSongs[room.songIndex];
   room.currentSong = song;
   room.answers = {};
+  room.roundStartTime = Date.now();
 
-  // Use shared startTime for audio sync + scoring
-  const startTime = Date.now() + 500; // small buffer for sync
-  room.roundStartTime = startTime;
-
-  const timeMs = (room.settings.timePerSong || 15) * 1000;
-  room.timerId = setTimeout(() => {
-    endSong(code, 'timeout');
-  }, timeMs);
+  if (room.timerId) clearTimeout(room.timerId);
+  const timeMs = room.settings.timePerSong * 1000;
+  room.timerId = setTimeout(() => endSong(code, 'timeout'), timeMs);
 
   io.to(code).emit('new-round', {
-    round: room.currentRound,             // logical round number
-    songNumber: room.currentSongIndex,    // 1..SONGS_PER_ROUND within round
-    songsPerRound: SONGS_PER_ROUND,
+    round: room.currentRound,
+    songNumber: room.songIndex + 1,
+    songsPerRound: room.roundSongs.length,
     audioUrl: song.audioUrl,
-    startTime,
-    timer: room.settings.timePerSong || 15
+    startTime: Date.now() + 500,
+    timer: room.settings.timePerSong
   });
+
+  room.songIndex += 1;
 }
 
-// End a single song (timeout or correct answer)
+// ── End current song (timeout or correct answer) ─────────────
 function endSong(code, reason) {
   const room = rooms.get(code);
   if (!room) return;
 
-  // Guard against double-ending
-  if (!room.isSongActive) return;
-  room.isSongActive = false;
-
   if (room.timerId) {
     clearTimeout(room.timerId);
     room.timerId = null;
   }
 
-  const leaderboard = getLeaderboard(room);
-
-  // Reveal correct answer + send updated leaderboard
-  io.to(code).emit('leaderboard-update', leaderboard);
   io.to(code).emit('round-end', {
     correctAnswer: room.currentSong?.correctAnswer || 'Unknown',
-    songNumber: room.currentSongIndex,
-    songsPerRound: SONGS_PER_ROUND,
-    reason: reason || 'unknown'
+    reason
   });
 
-  // 3-second countdown before next song / round end
+  io.to(code).emit('leaderboard-update', getLeaderboard(room));
+
+  // Start 3-second countdown before next song
   startBetweenSongCountdown(code);
 }
 
+// ── 3-second countdown between songs ─────────────────────────
 function startBetweenSongCountdown(code) {
   const room = rooms.get(code);
   if (!room) return;
 
   if (room.countdownTimerId) {
     clearInterval(room.countdownTimerId);
-    room.countdownTimerId = null;
   }
 
   let remaining = 3;
   room.countdownTimerId = setInterval(() => {
-    const r = rooms.get(code);
-    if (!r) {
-      clearInterval(room.countdownTimerId);
-      room.countdownTimerId = null;
-      return;
-    }
-
     io.to(code).emit('countdown', {
       secondsLeft: remaining,
       phase: 'between-songs'
@@ -309,37 +266,26 @@ function startBetweenSongCountdown(code) {
 
     remaining -= 1;
 
-    if (remaining <= 0) {
-      clearInterval(r.countdownTimerId);
-      r.countdownTimerId = null;
-
-      if (r.currentSongIndex < SONGS_PER_ROUND) {
-        // Next song within this round
-        r.currentSongIndex += 1;
-        startSong(code);
-      } else {
-        // Completed SONGS_PER_ROUND songs → finish round/game
-        // For now assume a single round; endGame will emit final leaderboard.
-        endGame(code);
-      }
+    if (remaining < 0) {
+      clearInterval(room.countdownTimerId);
+      room.countdownTimerId = null;
+      startNewSong(code); // Next song
     }
   }, 1000);
 }
 
+// ── End the full round/game ──────────────────────────────────
 function endGame(code) {
   const room = rooms.get(code);
   if (!room) return;
 
-  const leaderboard = room.players.map(p => ({
-    id: p.id,
-    name: p.name,
-    score: room.scores[p.id] || 0
-  })).sort((a, b) => b.score - a.score);
+  const leaderboard = getLeaderboard(room);
 
   io.to(code).emit('game-over', { leaderboard });
   room.state = 'finished';
-  // Optional: clean up room after some time
-  // setTimeout(() => rooms.delete(code), 60000);
+
+  // Optional: clean up after delay
+  setTimeout(() => rooms.delete(code), 60000);
 }
 
 // Start server
